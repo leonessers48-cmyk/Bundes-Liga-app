@@ -970,25 +970,50 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     store.set('afLeagues2', state.af.leagues);
     return map;
   }
+
+  // Gesperrte Abrufarten (Gratis-Tarif) merken, damit keine Abrufe verschwendet werden
+  function blocked(kind) { const b = store.get('afBlock:' + kind, null); return b && b.until > Date.now() ? b : null; }
+  function block(kind, msg) { store.set('afBlock:' + kind, { until: Date.now() + 6 * 3600e3, msg }); }
+  function clearBlocks() { store.keys().filter(k => k.startsWith('afBlock:')).forEach(k => store.del(k)); }
+
+  function dayKey(ms) { return 'afDay:' + C.berlinDate(ms || Date.now()); }
   function afIngestAll() {
+    const c = store.get(dayKey(), null);
+    const map = state.af.leagues && state.af.leagues.map;
+    if (c && map) {
+      const byAf = {};
+      AF_ONLY.forEach(id => { if (map[id]) byAf[map[id].afId] = id; });
+      const per = { rlw: [], rlsw: [], rlby: [] };
+      (c.fixtures || []).forEach(f => { const id = byAf[f.league.id]; if (id) per[id].push(C.parseAf(f, id, f._at || c.at)); });
+      AF_ONLY.forEach(id => replaceLeague(id, per[id]));
+    }
     AF_ONLY.forEach(id => {
-      const c = store.get('afRound:' + id, null);
-      if (!c) return;
-      const at = c.liveAt && c.liveAt > c.at ? c.liveAt : c.at;
-      replaceLeague(id, (c.fixtures || []).map(f => C.parseAf(f, id, f._at || at)));
       const t = store.get('tbl:' + id, null);
       if (t && t.rows) setTable(id, t.rows, t.at);
     });
   }
-  async function afLoadLeague(id, L) {
-    let c = store.get('afRound:' + id, null);
+  // Alle heutigen Spiele der acht Ligen in einem Abruf (ohne Saison-Parameter)
+  async function afLoadDay(map) {
     const today = C.berlinDate(Date.now());
-    if (c && c.date === today && Date.now() - c.at < 6 * 3600e3) return;
-    const rounds = await AF.call(`/fixtures/rounds?league=${L.afId}&season=${L.season}&current=true`);
-    const round = rounds[0] || null;
-    const fixtures = round ? await AF.call(`/fixtures?league=${L.afId}&season=${L.season}&round=${encodeURIComponent(round)}&timezone=${encodeURIComponent(C.TZ)}`) : [];
-    c = { at: Date.now(), date: today, round, fixtures };
-    store.set('afRound:' + id, c);
+    const ids = new Set(ALL_AF.filter(id => map[id]).map(id => map[id].afId));
+    const resp = await AF.call(`/fixtures?date=${today}&timezone=${encodeURIComponent(C.TZ)}`);
+    const now = Date.now();
+    const fixtures = resp.filter(f => f.league && ids.has(f.league.id)).map(f => ({ ...f, _at: now }));
+    store.set(dayKey(), { at: now, fixtures });
+    store.keys().filter(k => k.startsWith('afDay:') && k !== dayKey()).forEach(k => store.del(k));
+    applyFixtures(fixtures, map, now);
+  }
+  function dayNeedsRefresh(manual) {
+    const c = store.get(dayKey(), null), now = Date.now();
+    if (!c) return true;
+    const age = now - c.at;
+    if (age > 3 * 3600e3) return true;
+    if (age < (manual ? 10 : 20) * 60e3) return false;
+    // Spiele, die längst vorbei sein müssten, aber noch keinen Endstand haben
+    return (c.fixtures || []).some(f => {
+      const s = f.fixture.status.short, k = f.fixture.timestamp * 1000;
+      return !C.AF_FINAL.has(s) && !C.AF_OFF.has(s) && k + 115 * 60e3 < now && k > now - 10 * 3600e3;
+    });
   }
   async function afLoadTable(id, L) {
     const t = store.get('tbl:' + id, null);
@@ -1006,27 +1031,28 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     }
     return false;
   }
-  function applyFixtures(list, map, now) {
+  // Neue Fixture-Daten einarbeiten: Tagesliste aktualisieren, OpenLigaDB-Spiele überlagern
+  function applyFixtures(list, map, now, keepAt) {
     const byAf = {};
     ALL_AF.forEach(id => { if (map[id]) byAf[map[id].afId] = id; });
-    const rounds = {};
+    const c = store.get(dayKey(), null) || { at: now, fixtures: [] };
     list.forEach(f => {
       const lg = byAf[f.league && f.league.id];
       if (!lg) return;
-      if (AF_ONLY.includes(lg)) {
-        const c = rounds[lg] || (rounds[lg] = store.get('afRound:' + lg, null));
-        if (!c) return;
-        f._at = now;
-        const i = (c.fixtures || []).findIndex(x => x.fixture.id === f.fixture.id);
-        if (i >= 0) c.fixtures[i] = f; else c.fixtures.push(f);
-        c.liveAt = now;
-      } else {
+      const at = keepAt && f._at ? f._at : now;
+      const g = { ...f, _at: at };
+      if (C.berlinDate(f.fixture.timestamp * 1000) === C.berlinDate(now)) {
+        const i = c.fixtures.findIndex(x => x.fixture.id === f.fixture.id);
+        if (i >= 0) c.fixtures[i] = g; else c.fixtures.push(g);
+      }
+      if (!AF_ONLY.includes(lg)) {
         const cands = [...state.matches.values()].filter(m => m.league === lg && m.src === 'oldb');
         const m = C.matchFixture(cands, f);
-        if (m) state.ov[m.key] = C.ovFromAf(f, now);
+        if (m) state.ov[m.key] = C.ovFromAf(f, at);
       }
     });
-    Object.entries(rounds).forEach(([lg, c]) => store.set('afRound:' + lg, c));
+    store.set(dayKey(), c);
+    saveOv();
   }
   async function afLive(map) {
     const ids = ALL_AF.filter(id => map[id]).map(id => map[id].afId);
@@ -1035,23 +1061,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     const resp = await AF.call(`/fixtures?live=${ids.join('-')}&timezone=${encodeURIComponent(C.TZ)}`);
     state.af.lastLive = now; store.set('afLastLive', now);
     const liveIds = new Set(resp.map(f => f.fixture.id));
-
     // Spiele, die vorher live waren und jetzt fehlen, sind wohl beendet → Endstand einmal nachladen
     const gone = new Set();
     Object.values(state.ov).forEach(o => { if (o && C.AF_LIVE.has(o.s) && !liveIds.has(o.id)) gone.add(o.id); });
-    AF_ONLY.forEach(id => {
-      const c = store.get('afRound:' + id, null);
-      (c && c.fixtures || []).forEach(f => { if (C.AF_LIVE.has(f.fixture.status.short) && !liveIds.has(f.fixture.id)) gone.add(f.fixture.id); });
-    });
+    const c = store.get(dayKey(), null);
+    (c && c.fixtures || []).forEach(f => { if (C.AF_LIVE.has(f.fixture.status.short) && !liveIds.has(f.fixture.id)) gone.add(f.fixture.id); });
     applyFixtures(resp, map, now);
     if (gone.size) {
       const fin = await AF.call(`/fixtures?ids=${[...gone].slice(0, 20).join('-')}&timezone=${encodeURIComponent(C.TZ)}`).catch(() => []);
-      fin.forEach(f => {
-        Object.keys(state.ov).forEach(k => { if (state.ov[k].id === f.fixture.id) state.ov[k] = C.ovFromAf(f, now); });
-      });
-      applyFixtures(fin.filter(f => AF_ONLY.some(id => map[id] && map[id].afId === f.league.id)), map, now);
+      applyFixtures(fin, map, Date.now());
     }
-    saveOv();
   }
   async function afCycle(manual) {
     state.af.liveErr = null;
@@ -1060,40 +1079,60 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     let map;
     try { map = await afDiscover(false); }
     catch (e) {
-      const code = e.code === 'plan' ? 'plan' : e.message;
-      AF_ONLY.forEach(id => { state.errors[id] = code; });
-      state.af.liveErr = e.code === 'plan' ? 'plan' : e.message;
+      AF_ONLY.forEach(id => { state.errors[id] = e.code === 'plan' ? 'plan' : e.message; });
+      state.af.liveErr = e.message;
       return;
     }
-    for (const id of AF_ONLY) {
-      if (!map[id]) { state.errors[id] = 'Liga bei API-Football nicht gefunden'; continue; }
-      try {
-        await afLoadLeague(id, map[id]);
-        await afLoadTable(id, map[id]).catch(() => {});
-        delete state.errors[id];
-      } catch (e) { state.errors[id] = e.code === 'plan' ? 'plan' : e.message; }
+    // 1) Heutige Spiele (Endstände, Spielplan RL West/Südwest/Bayern)
+    if (!blocked('day') && dayNeedsRefresh(manual)) {
+      try { await afLoadDay(map); }
+      catch (e) { if (e.code === 'plan') block('day', e.message); else state.af.liveErr = e.message; }
     }
+    // 2) Tabellen RL West/Südwest/Bayern für den Modell-Tipp
+    for (const id of AF_ONLY) {
+      if (!map[id] || blocked('tbl')) continue;
+      try { await afLoadTable(id, map[id]); }
+      catch (e) { if (e.code === 'plan') block('tbl', e.message); break; }
+    }
+    // 3) Live-Stände
     const wait = manual ? AF_LIVE_MANUAL : AF_LIVE_EVERY;
-    if (needsLive(Date.now()) && Date.now() - state.af.lastLive >= wait) {
+    if (!blocked('live') && needsLive(Date.now()) && Date.now() - state.af.lastLive >= wait) {
       try { await afLive(map); }
-      catch (e) { state.af.liveErr = e.code === 'plan' ? 'plan' : e.message; }
+      catch (e) { if (e.code === 'plan') block('live', e.message); else state.af.liveErr = e.message; }
     }
     afIngestAll();
+    const hasDay = !!store.get(dayKey(), null);
+    AF_ONLY.forEach(id => {
+      if (!map[id]) state.errors[id] = 'Liga bei API-Football nicht gefunden';
+      else if (!hasDay && blocked('day')) state.errors[id] = 'plan';
+      else delete state.errors[id];
+    });
   }
   async function afCheck() {
-    const out = { at: Date.now(), ok: false, msg: '' };
+    const out = { at: Date.now(), ok: false, msg: '', raw: '', v: 2 };
+    clearBlocks();
     try {
       const map = await afDiscover(true);
       const found = ALL_AF.filter(id => map[id]);
       if (!found.length) throw new Error('Die deutschen Ligen wurden bei API-Football nicht gefunden.');
-      const probe = map.rlw || map[found[0]];
-      await AF.call(`/standings?league=${probe.afId}&season=${probe.season}`);
-      out.ok = true;
-      out.msg = `Verbunden. ${found.length} von 8 Ligen gefunden, die Saison ${probe.season}/${String(probe.season + 1).slice(2)} ist in deinem Tarif enthalten. Live-Stände kommen jetzt von API-Football.`;
+      let liveOk = true, dayOk = true;
+      try {
+        const resp = await AF.call(`/fixtures?live=${found.map(id => map[id].afId).join('-')}&timezone=${encodeURIComponent(C.TZ)}`);
+        state.af.lastLive = Date.now(); store.set('afLastLive', state.af.lastLive);
+        applyFixtures(resp, map, Date.now());
+      }
+      catch (e) { if (e.code !== 'plan') throw e; liveOk = false; block('live', e.message); out.raw = e.message; }
+      try { await afLoadDay(map); }
+      catch (e) { if (e.code !== 'plan') throw e; dayOk = false; block('day', e.message); out.raw = out.raw || e.message; }
+      out.ok = liveOk || dayOk;
+      if (liveOk && dayOk) out.msg = `Verbunden. ${found.length} von 8 Ligen gefunden. Live-Stände und heutige Ergebnisse kommen jetzt von API-Football.`;
+      else if (liveOk) out.msg = 'Verbunden. Live-Stände kommen von API-Football, die Tagesübersicht ist im Gratis-Tarif gesperrt.';
+      else if (dayOk) out.msg = 'Teilweise verbunden. Heutige Spiele und Endstände kommen von API-Football, der Live-Abruf ist im Gratis-Tarif gesperrt.';
+      else out.msg = 'Der Key funktioniert, aber Live-Stände und heutige Spiele sind im Gratis-Tarif gesperrt.';
     } catch (e) {
-      if (e.code === 'plan') out.msg = 'Der Key funktioniert, aber die aktuelle Saison ist im Gratis-Tarif nicht enthalten. Live-Stände kommen deshalb nur von OpenLigaDB und können hängen.';
-      else if (e.code === 'key') out.msg = 'Der Key wurde nicht akzeptiert. Bitte aus dem API-Football-Dashboard neu kopieren.';
+      if (e.code === 'key') out.msg = 'Der Key wurde nicht akzeptiert. Bitte aus dem API-Football-Dashboard neu kopieren.';
       else out.msg = e.message;
+      out.raw = e.message;
     }
     state.af.status = out; store.set('afStatus', out);
     return out;
@@ -1108,6 +1147,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       catch (e) { state.errors[lg.id] = e.message; }
       loadOldbTable(lg).catch(() => {});
     }));
+    const c = store.get(dayKey(), null), L = state.af.leagues;
+    if (state.af.key && c && L && L.map) applyFixtures(c.fixtures || [], L.map, Date.now(), true);
     await afCycle(manual).catch(() => {});
     state.lastUpdate = Date.now(); store.set('lastUpdate', state.lastUpdate);
     state.loading = false; setSpin(false);
@@ -1190,8 +1231,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     if (!state.af.key) {
       why = 'Ohne API-Football-Key kommen die Live-Stände nur von OpenLigaDB. Dort tragen Freiwillige die Tore von Hand nach, das hängt oft.';
       action = '<button type="button" class="link" data-open="settings">Key eintragen</button>';
-    } else if (state.af.liveErr === 'plan' || (st && !st.ok && /Tarif/.test(st.msg))) {
-      why = 'Dein API-Football-Tarif enthält die aktuelle Saison nicht. Die Stände kommen deshalb nur von OpenLigaDB und hängen teilweise.';
+    } else if (blocked('live') && blocked('day')) {
+      why = 'Dein API-Football-Gratis-Tarif sperrt Live-Stände und heutige Spiele. Die Stände kommen deshalb nur von OpenLigaDB und hängen teilweise.';
+    } else if (blocked('live')) {
+      why = 'Der Live-Abruf ist im API-Football-Gratis-Tarif gesperrt. Endstände kommen von API-Football, laufende Spiele nur von OpenLigaDB.';
     } else if (state.af.liveErr) {
       why = 'Live-Abruf bei API-Football fehlgeschlagen: ' + state.af.liveErr;
     } else {
@@ -1377,7 +1420,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     $('#scDiff').value = state.scoring.diff;
     $('#scTend').value = state.scoring.tend;
     const st = state.af.status;
-    $('#afState').textContent = DEMO ? 'In der Vorschau ist der Abruf abgeschaltet.' : st ? st.msg : state.af.key ? 'Noch nicht geprüft.' : 'Noch kein Key eingetragen.';
+    $('#afState').textContent = DEMO ? 'In der Vorschau ist der Abruf abgeschaltet.' : st ? st.msg + (st.raw ? ` (Antwort von API-Football: ${st.raw})` : '') : state.af.key ? 'Noch nicht geprüft.' : 'Noch kein Key eingetragen.';
     $('#afState').className = 'fine ' + (st && st.ok ? 'ok' : st ? 'bad' : '');
     $('#afUsed').textContent = `Heute ${AF.used()} von ${AF_LIMIT} Abrufen verbraucht. Die App hört bei ${AF_STOP} auf und fragt Live-Stände höchstens alle 2,5 Minuten ab, solange sie geöffnet ist.`;
     $('#favList').innerHTML = state.favs.length
@@ -1436,7 +1479,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       const key = $('#afKey').value.trim();
       state.af.key = key; store.set('afKey', key);
       state.af.leagues = null; store.del('afLeagues2'); store.del('afLeagues');
-      AF_ONLY.forEach(id => { store.del('afRound:' + id); store.del('tbl:' + id); });
+      AF_ONLY.forEach(id => { store.del('tbl:' + id); });
+      store.keys().filter(k => /^(afRound:|afDay:|afBlock:)/.test(k)).forEach(k => store.del(k));
       if (!key) { state.af.status = null; store.del('afStatus'); fillSettings(); render(); return; }
       $('#afState').textContent = 'Prüfe Key …'; $('#afState').className = 'fine';
       await afCheck();
@@ -1462,7 +1506,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       state.installEvt = null; fillSettings();
     });
     $('#resetBtn').addEventListener('click', () => {
-      store.keys().filter(k => /^(m:|tbl:|afRound:|afLeagues|lastUpdate|ov$)/.test(k)).forEach(k => store.del(k));
+      store.keys().filter(k => /^(m:|tbl:|afRound:|afDay:|afBlock:|afLeagues|lastUpdate|ov$)/.test(k)).forEach(k => store.del(k));
       state.matches.clear(); state.tables = {}; state.af.leagues = null; state.ov = {}; state.lastUpdate = 0;
       closeSettings(); render(); refresh(true);
     });
@@ -1488,11 +1532,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       return;
     }
     store.del('afLeagues');
+    store.keys().filter(k => k.startsWith('afRound:')).forEach(k => store.del(k));
     loadCachedTables();
     loadCachedMatches();
     if (!state.af.key) AF_ONLY.forEach(id => { state.errors[id] = 'nokey'; });
     render();
-    refresh(false);
+    // Key nach einem App-Update einmal neu prüfen (die Prüfung hat sich geändert)
+    const st = state.af.status;
+    if (state.af.key && (!st || st.v !== 2)) afCheck().catch(() => {}).then(() => refresh(false));
+    else refresh(false);
     setInterval(tick, 15e3);
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
