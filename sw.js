@@ -1,5 +1,5 @@
 /* Lila-Gelb Ticker – Service Worker: App-Gerüst offline verfügbar, Spieldaten immer frisch aus dem Netz */
-const CACHE = 'lg-ticker-c3358da968';
+const CACHE = 'lg-ticker-5a1a1049df';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', e => {

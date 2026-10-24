@@ -167,6 +167,10 @@ svg { display: block; }
 .p-pre { border: 1.5px solid var(--line); color: var(--fg); background: var(--surface); }
 .p-ft { color: var(--muted); background: var(--surface-2); font-weight: 600; }
 .p-off { color: var(--bad); border: 1.5px solid currentColor; font-size: 14px; }
+.pill.stale { background-image: repeating-linear-gradient(135deg, transparent 0 5px, #00000022 5px 9px); }
+.warn { color: var(--bad); font-weight: 600; }
+.center { text-align: center; }
+.note.warnbox { border: 1.5px solid var(--bad); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gelb-ink); animation: blink 1.6s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .2; } }
 
@@ -335,8 +339,9 @@ input[type="text"], input[type="number"] {
 <main id="list" class="list"></main>
 
 <footer class="foot">
-  <p>Daten: OpenLigaDB (Community-gepflegt) für Bundesliga bis Regionalliga Nord/Nordost, API-Football für Regionalliga West, Südwest und Bayern.</p>
-  <p>Minuten mit „~“ sind aus der Anstoßzeit geschätzt. Prognosen sind Statistik, keine Garantie.</p>
+  <p>Spielplan und Tabellen: OpenLigaDB. Live-Stände: API-Football, ohne Key nur OpenLigaDB (von Hand gepflegt, kann hängen).</p>
+  <p id="srcLine"></p>
+  <p>Minuten mit „~“ sind geschätzt, ein „?“ heißt: Stand möglicherweise veraltet. Prognosen sind Statistik, keine Garantie.</p>
 </footer>
 
 <div class="sheet-wrap" id="sheet" hidden>
@@ -355,7 +360,7 @@ input[type="text"], input[type="number"] {
       <h3 id="setTitle">Einstellungen</h3>
 
       <form id="afForm" class="field">
-        <label for="afKey">API-Football-Key <small>für Regionalliga West, Südwest, Bayern</small></label>
+        <label for="afKey">API-Football-Key <small>Zuverlässige Live-Stände für alle Ligen, dazu Regionalliga West, Südwest und Bayern</small></label>
         <div class="inrow">
           <input id="afKey" name="afKey" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Key aus dashboard.api-football.com">
           <button type="submit" class="btn primary">Speichern</button>
@@ -433,6 +438,24 @@ const LGCore = (() => {
   function berlinTime(ms) { return fmtTime.format(new Date(ms)); }
   function berlinDay(ms)  { const d = berlinDate(ms); return `${berlinWd(ms)}, ${d.slice(8, 10)}.${d.slice(5, 7)}.`; }
   function berlinWd(ms)   { return fmtWd.format(new Date(ms)).replace(/\.$/, ''); }
+  const fmtParts = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+  function tzOffset(ms) {
+    const p = {};
+    fmtParts.formatToParts(new Date(ms)).forEach(x => { p[x.type] = +x.value; });
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second) - Math.floor(ms / 1000) * 1000;
+  }
+  // OpenLigaDB liefert lastUpdateDateTime als deutsche Ortszeit ohne Zeitzone
+  function berlinLocalToMs(s) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(s || '');
+    if (!m) return null;
+    const asUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+    return asUtc - tzOffset(asUtc - 2 * 3600e3);
+  }
+  function words(s) {
+    return String(s || '').toLowerCase()
+      .replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss')
+      .split(/[^a-z0-9]+/).filter(Boolean);
+  }
 
   /* ---------- OpenLigaDB ---------- */
   function parseOldb(r, league) {
@@ -461,7 +484,13 @@ const LGCore = (() => {
       const e = [endR.pointsTeam1, endR.pointsTeam2];
       if (!score || e[0] + e[1] >= score[0] + score[1]) score = e;
     }
-    const ht = htR && Number.isFinite(htR.pointsTeam1) ? [htR.pointsTeam1, htR.pointsTeam2] : null;
+    let ht = htR && Number.isFinite(htR.pointsTeam1) ? [htR.pointsTeam1, htR.pointsTeam2] : null;
+    // Halbzeitstand aus den Toren, falls der eingetragene Wert nur ein Platzhalter ist
+    if (goals.length && goals.every(g => g.min != null)) {
+      const first = goals.filter(g => g.min <= 45);
+      const fromGoals = first.length ? [first[first.length - 1].h, first[first.length - 1].a] : [0, 0];
+      if (!ht || ht[0] + ht[1] < fromGoals[0] + fromGoals[1]) ht = fromGoals;
+    }
     if (!score && ht) score = ht.slice();
 
     const t1 = r.team1 || {}, t2 = r.team2 || {};
@@ -476,6 +505,7 @@ const LGCore = (() => {
       finished: !!r.matchIsFinished,
       ht, score, goals,
       maxGoalMin: goals.reduce((m, g) => Math.max(m, g.min || 0), 0),
+      updated: berlinLocalToMs(r.lastUpdateDateTime),
     };
   }
 
@@ -506,11 +536,80 @@ const LGCore = (() => {
     };
   }
   const AF_LIVE = new Set(['1H', '2H', 'ET', 'P', 'LIVE', 'HT', 'BT', 'SUSP', 'INT']);
+  const AF_FINAL = new Set(['FT', 'AET', 'PEN', 'AWD', 'WO']);
+  const AF_OFF = new Set(['PST', 'CANC', 'ABD']);
+
+  // Live-Daten von API-Football als Auflage auf ein OpenLigaDB-Spiel
+  function ovFromAf(f, at) {
+    const fx = f.fixture || {}, st = fx.status || {}, g = f.goals || {}, sc = f.score || {};
+    return {
+      id: fx.id, s: st.short || 'NS',
+      el: Number.isFinite(st.elapsed) ? st.elapsed : null,
+      ex: Number.isFinite(st.extra) ? st.extra : null,
+      sc: g.home != null && g.away != null ? [g.home, g.away] : null,
+      ht: sc.halftime && sc.halftime.home != null ? [sc.halftime.home, sc.halftime.away] : null,
+      at,
+    };
+  }
+  const GENERIC = new Set(['fc', 'sv', 'sg', 'tsv', 'vfl', 'vfb', 'tsg', 'spvgg', 'ssv', 'fsv', 'sc', 'bsc', 'dsc', 'rb', 'fk', 'sport', 'club', 'verein', 'und', 'ii', 'u23', 'u21', 'rot', 'weiss', 'blau', 'borussia', 'eintracht']);
+  function teamTokens(name) {
+    return new Set(words(name).filter(w => w.length >= 3 && !GENERIC.has(w) && !/^\d+$/.test(w)));
+  }
+  function teamSim(a, b) {
+    const A = teamTokens(a), B = teamTokens(b);
+    let n = 0;
+    A.forEach(w => { if (B.has(w)) n++; });
+    const reserveA = /\b(ii|u23|u21)\b/.test(words(a).join(' ')), reserveB = /\b(ii|u23|u21)\b/.test(words(b).join(' '));
+    return reserveA === reserveB ? n : 0;
+  }
+  function matchFixture(candidates, f) {
+    const k = (f.fixture && f.fixture.timestamp ? f.fixture.timestamp * 1000 : Date.parse(f.fixture && f.fixture.date));
+    const hn = f.teams && f.teams.home && f.teams.home.name, an = f.teams && f.teams.away && f.teams.away.name;
+    const scored = [];
+    candidates.forEach(m => {
+      if (Math.abs(m.kickoff - k) > 20 * 60e3) return;
+      const h = Math.max(teamSim(m.home.name, hn), teamSim(m.home.short, hn));
+      const a = Math.max(teamSim(m.away.name, an), teamSim(m.away.short, an));
+      if (h || a) scored.push({ m, h, a, both: h > 0 && a > 0, total: h + a });
+    });
+    const both = scored.filter(x => x.both).sort((x, y) => y.total - x.total);
+    if (both.length) return both[0].m;
+    // Nur eine Seite erkannt: nur übernehmen, wenn es genau einen Kandidaten gibt
+    return scored.length === 1 ? scored[0].m : null;
+  }
 
   /* ---------- Spielstatus ---------- */
   // state: pre | live | ht | ft | end (Abpfiff vermutet) | off (verlegt/abgesagt)
+  // stale: 'none' = seit Anpfiff keine Daten, 'lag' = Daten veraltet (staleSince)
   function derive(m, now) {
-    return m.src === 'af' ? deriveAf(m, now) : deriveOldb(m, now);
+    if (m.src === 'af') {
+      const s = deriveAf(m, now);
+      s.score = s.state === 'pre' || s.state === 'off' ? null : (m.score || [0, 0]);
+      s.ht = m.ht; s.via = 'af';
+      markAfStale(s, m.fetchedAt, now);
+      return s;
+    }
+    const ov = m.ov;
+    if (ov && (AF_FINAL.has(ov.s) || !m.finished || (m.updated || 0) < ov.at)) {
+      const s = deriveAf({ afStatus: ov.s, afElapsed: ov.el, afExtra: ov.ex, fetchedAt: ov.at, kickoff: m.kickoff }, now);
+      if (s.state !== 'pre' && s.state !== 'end') {
+        s.score = s.state === 'off' ? null : (ov.sc || m.score || [0, 0]);
+        s.ht = ov.ht || m.ht; s.via = 'af';
+        markAfStale(s, ov.at, now);
+        return s;
+      }
+    }
+    const s = deriveOldb(m, now);
+    s.score = s.state === 'pre' ? null : (m.score || [0, 0]);
+    s.ht = m.ht; s.via = 'oldb';
+    if (s.state === 'live' || s.state === 'ht' || s.state === 'end') {
+      if (!m.updated || m.updated < m.kickoff + 60e3) s.stale = 'none';
+      else if (now - m.updated > 15 * 60e3) { s.stale = 'lag'; s.staleSince = m.updated; }
+    }
+    return s;
+  }
+  function markAfStale(s, at, now) {
+    if ((s.state === 'live' || s.state === 'ht') && at && now - at > 12 * 60e3) { s.stale = 'lag'; s.staleSince = at; }
   }
   function deriveOldb(m, now) {
     if (m.finished) return { state: 'ft', label: 'Ende' };
@@ -519,7 +618,7 @@ const LGCore = (() => {
     const secondHalfSeen = m.maxGoalMin > 45;
     // Annahme: 45 Min. + ca. 3 Min. Nachspielzeit + 15 Min. Pause → 2. HZ beginnt ca. 63 Min. nach Anstoß
     if (e < 45) return { state: 'live', min: Math.floor(e) + 1, approx: true };
-    if (e < 48 && !m.ht && !secondHalfSeen) return { state: 'live', min: 45, plus: true, approx: true };
+    if (e < 48 && !secondHalfSeen) return { state: 'live', min: 45, plus: true, approx: true };
     if (e < 63 && !secondHalfSeen) return { state: 'ht', approx: true };
     const m2 = Math.max(46, Math.floor(e - 63) + 46, m.maxGoalMin || 0);
     if (m2 <= 90) return { state: 'live', min: m2, approx: true };
@@ -672,12 +771,12 @@ const LGCore = (() => {
     const M = matrix(lh, la, 8, -0.08);
     const o = outcome(M);
     const out = { ok: true, H, A, lh, la, ...o, pct: pct3(o.pH, o.pD, o.pA), top: topScores(M, 3), tip: bestTip(M, sc) };
-    if ((st.state === 'live' || st.state === 'ht') && m.score) {
+    if ((st.state === 'live' || st.state === 'ht') && st.score) {
       const minute = minuteOf(st) || 1;
       const r = clamp((93 - minute) / 93, 0.02, 1);
       const R = matrix(lh * r, la * r, 7, 0);
-      const lo = outcome(R, m.score);
-      out.live = { minute, ...lo, pct: pct3(lo.pH, lo.pD, lo.pA), top: topScores(R, 2, m.score) };
+      const lo = outcome(R, st.score);
+      out.live = { minute, ...lo, pct: pct3(lo.pH, lo.pD, lo.pA), top: topScores(R, 2, st.score) };
     }
     return out;
   }
@@ -712,9 +811,9 @@ const LGCore = (() => {
   }
 
   return {
-    TZ, LEAGUES, LEAGUE_BY_ID, AF_LIVE,
+    TZ, LEAGUES, LEAGUE_BY_ID, AF_LIVE, AF_FINAL, AF_OFF,
     norm, clamp, seasonFor, berlinDate, berlinTime, berlinDay, berlinWd,
-    parseOldb, parseAf, roundLabel, derive, minuteOf,
+    parseOldb, parseAf, roundLabel, derive, minuteOf, ovFromAf, matchFixture, berlinLocalToMs, teamSim,
     tableFromOldb, tableFromAf, makeTable, findRow,
     predict, tipPoints, pct3, isFav, group,
   };
@@ -731,6 +830,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
   const OLDB = 'https://api.openligadb.de';
   const AFB = 'https://v3.football.api-sports.io';
   const AF_LIMIT = 100, AF_STOP = 92;
+  const AF_LIVE_EVERY = 150e3;          // API-Football höchstens alle 2,5 Minuten
+  const AF_LIVE_MANUAL = 45e3;          // per Knopf frühestens nach 45 Sekunden
+  const ALL_AF = ['bl1', 'bl2', 'bl3', 'rln', 'rlno', 'rlw', 'rlsw', 'rlby'];
+  const AF_ONLY = ['rlw', 'rlsw', 'rlby'];
   const $ = s => document.querySelector(s);
 
   /* ---------- Speicher (nur auf diesem Gerät) ---------- */
@@ -745,12 +848,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     matches: new Map(),
     tables: {},
     errors: {},
+    ov: store.get('ov', {}),
     filter: store.get('filter', 'all'),
     favs: store.get('favs', ['VfL Osnabrück', 'Alemannia Aachen']),
     scoring: store.get('scoring', { exact: 4, diff: 3, tend: 2 }),
     lastUpdate: store.get('lastUpdate', null),
     loading: false,
-    af: { key: store.get('afKey', ''), leagues: store.get('afLeagues', null), status: store.get('afStatus', null), lastLive: 0 },
+    af: { key: store.get('afKey', ''), leagues: store.get('afLeagues2', null), status: store.get('afStatus', null), lastLive: store.get('afLastLive', 0), liveErr: null },
     openKey: null,
     installEvt: null,
   };
@@ -759,11 +863,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
   const num = (x, d = 1) => Number(x).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
 
   /* ---------- Netz ---------- */
-  async function getJSON(url, headers) {
+  async function getJSON(url) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const r = await fetch(url, { headers: headers || {}, signal: ctrl.signal, cache: 'no-store' });
+      const r = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
       if (!r.ok) { const e = new Error('Server antwortet mit Fehler ' + r.status); e.status = r.status; throw e; }
       return await r.json();
     } catch (e) {
@@ -774,9 +878,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
   }
 
   /* ---------- Tabellen ---------- */
-  function setTable(id, rows, at) {
-    state.tables[id] = { ...C.makeTable(rows), at: at || Date.now() };
-  }
+  function setTable(id, rows, at) { state.tables[id] = { ...C.makeTable(rows), at: at || Date.now() }; }
   function loadCachedTables() {
     C.LEAGUES.forEach(l => {
       const c = store.get('tbl:' + l.id, null);
@@ -790,7 +892,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     if (rows.length) { setTable(lg.id, rows); store.set('tbl:' + lg.id, { at: Date.now(), rows }); }
   }
 
-  /* ---------- OpenLigaDB ---------- */
+  /* ---------- OpenLigaDB (Spielplan aller Ligen außer RL West/Südwest/Bayern) ---------- */
   function replaceLeague(id, list) {
     for (const [k, m] of state.matches) if (m.league === id) state.matches.delete(k);
     list.forEach(m => state.matches.set(m.key, m));
@@ -808,15 +910,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     });
     afIngestAll();
   }
+  function withOv(m) { m.ov = m.src === 'oldb' ? (state.ov[m.key] || null) : null; return m; }
+  function saveOv() {
+    const cut = Date.now() - 36 * 3600e3;
+    Object.keys(state.ov).forEach(k => { if (!state.ov[k] || state.ov[k].at < cut) delete state.ov[k]; });
+    store.set('ov', state.ov);
+  }
 
-  /* ---------- API-Football (Regionalliga West, Südwest, Bayern) ---------- */
+  /* ---------- API-Football (Live-Stände aller Ligen + Spielplan RL West, Südwest, Bayern) ---------- */
   const AF = {
     day() { return new Date().toISOString().slice(0, 10); },
     used() { return store.get('afUsed:' + this.day(), 0); },
     tidy() { store.keys().filter(k => k.startsWith('afUsed:') && k !== 'afUsed:' + this.day()).forEach(k => store.del(k)); },
     async call(path) {
       if (!state.af.key) { const e = new Error('Kein API-Football-Key eingetragen'); e.code = 'nokey'; throw e; }
-      if (this.used() >= AF_STOP) { const e = new Error(`Tageslimit erreicht (${AF_STOP} von ${AF_LIMIT} Abrufen). In der Nacht setzt sich das Limit zurück.`); e.code = 'budget'; throw e; }
+      if (this.used() >= AF_STOP) { const e = new Error(`Tageslimit erreicht (${AF_STOP} von ${AF_LIMIT} Abrufen). In der Nacht setzt es sich zurück.`); e.code = 'budget'; throw e; }
       store.set('afUsed:' + this.day(), this.used() + 1);
       let r;
       try { r = await fetch(AFB + path, { headers: { 'x-apisports-key': state.af.key }, cache: 'no-store' }); }
@@ -828,7 +936,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
         const msg = typeof first === 'object' && first.v ? String(first.v) : String(first);
         const e = new Error(msg); e.code = (first && first.k) || 'api';
         if (/plan|season/i.test(e.code + msg)) e.code = 'plan';
-        if (/token|key/i.test(e.code)) e.code = 'key';
+        else if (/token|key/i.test(e.code)) e.code = 'key';
+        else if (/request|limit|rate/i.test(e.code)) e.code = 'budget';
         throw e;
       }
       if (!r.ok) throw new Error('API-Football antwortet mit Fehler ' + r.status);
@@ -842,39 +951,41 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     const resp = await AF.call('/leagues?country=Germany');
     const map = {};
     resp.forEach(it => {
+      if (it.league && it.league.type && it.league.type !== 'League') return;
       const n = C.norm(it.league && it.league.name);
-      if (!n.startsWith('regionalliga')) return;
       let id = null;
-      if (n === 'regionalligawest') id = 'rlw';
-      else if (n.endsWith('sudwest') || n.endsWith('suedwest')) id = 'rlsw';
-      else if (n.endsWith('bayern')) id = 'rlby';
-      if (!id) return;
+      if (n === 'bundesliga') id = 'bl1';
+      else if (n === '2bundesliga') id = 'bl2';
+      else if (n === '3liga') id = 'bl3';
+      else if (n === 'regionalliganord') id = 'rln';
+      else if (n === 'regionalliganordost') id = 'rlno';
+      else if (n === 'regionalligawest') id = 'rlw';
+      else if (n.startsWith('regionalliga') && (n.endsWith('sudwest') || n.endsWith('suedwest'))) id = 'rlsw';
+      else if (n === 'regionalligabayern') id = 'rlby';
+      if (!id || map[id]) return;
       const cur = (it.seasons || []).find(s => s.current);
       map[id] = { afId: it.league.id, season: cur ? cur.year : C.seasonFor(Date.now()) };
     });
     state.af.leagues = { at: Date.now(), map };
-    store.set('afLeagues', state.af.leagues);
+    store.set('afLeagues2', state.af.leagues);
     return map;
   }
   function afIngestAll() {
-    ['rlw', 'rlsw', 'rlby'].forEach(id => {
+    AF_ONLY.forEach(id => {
       const c = store.get('afRound:' + id, null);
       if (!c) return;
-      replaceLeague(id, (c.fixtures || []).map(f => C.parseAf(f, id, c.liveAt && c.liveAt > c.at ? c.liveAt : c.at)));
+      const at = c.liveAt && c.liveAt > c.at ? c.liveAt : c.at;
+      replaceLeague(id, (c.fixtures || []).map(f => C.parseAf(f, id, f._at || at)));
       const t = store.get('tbl:' + id, null);
       if (t && t.rows) setTable(id, t.rows, t.at);
     });
   }
-  async function afLoadLeague(id, L, force) {
+  async function afLoadLeague(id, L) {
     let c = store.get('afRound:' + id, null);
     const today = C.berlinDate(Date.now());
-    const fresh = c && c.date === today && Date.now() - c.at < 6 * 3600e3 && !c.stale;
-    if (fresh && !force) return;
-    let round = c && c.date === today ? c.round : null;
-    if (!round) {
-      const rounds = await AF.call(`/fixtures/rounds?league=${L.afId}&season=${L.season}&current=true`);
-      round = rounds[0] || null;
-    }
+    if (c && c.date === today && Date.now() - c.at < 6 * 3600e3) return;
+    const rounds = await AF.call(`/fixtures/rounds?league=${L.afId}&season=${L.season}&current=true`);
+    const round = rounds[0] || null;
     const fixtures = round ? await AF.call(`/fixtures?league=${L.afId}&season=${L.season}&round=${encodeURIComponent(round)}&timezone=${encodeURIComponent(C.TZ)}`) : [];
     c = { at: Date.now(), date: today, round, fixtures };
     store.set('afRound:' + id, c);
@@ -885,59 +996,87 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     const rows = C.tableFromAf(await AF.call(`/standings?league=${L.afId}&season=${L.season}`));
     if (rows.length) store.set('tbl:' + id, { at: Date.now(), rows });
   }
-  function afNeedsLive(now) {
-    return ['rlw', 'rlsw', 'rlby'].some(id => {
-      const c = store.get('afRound:' + id, null);
-      return c && (c.fixtures || []).some(f => {
-        const s = f.fixture.status.short, k = f.fixture.timestamp * 1000;
-        return C.AF_LIVE.has(s) || ((s === 'NS' || s === 'TBD') && k <= now + 2 * 60e3 && k >= now - 150 * 60e3);
-      });
+  function needsLive(now) {
+    for (const m of state.matches.values()) {
+      if (m.finished) continue;
+      if (m.src === 'af' && (C.AF_FINAL.has(m.afStatus) || C.AF_OFF.has(m.afStatus))) continue;
+      const ov = state.ov[m.key];
+      if (ov && (C.AF_FINAL.has(ov.s) || C.AF_OFF.has(ov.s))) continue;
+      if (m.kickoff <= now + 2 * 60e3 && m.kickoff >= now - 150 * 60e3) return true;
+    }
+    return false;
+  }
+  function applyFixtures(list, map, now) {
+    const byAf = {};
+    ALL_AF.forEach(id => { if (map[id]) byAf[map[id].afId] = id; });
+    const rounds = {};
+    list.forEach(f => {
+      const lg = byAf[f.league && f.league.id];
+      if (!lg) return;
+      if (AF_ONLY.includes(lg)) {
+        const c = rounds[lg] || (rounds[lg] = store.get('afRound:' + lg, null));
+        if (!c) return;
+        f._at = now;
+        const i = (c.fixtures || []).findIndex(x => x.fixture.id === f.fixture.id);
+        if (i >= 0) c.fixtures[i] = f; else c.fixtures.push(f);
+        c.liveAt = now;
+      } else {
+        const cands = [...state.matches.values()].filter(m => m.league === lg && m.src === 'oldb');
+        const m = C.matchFixture(cands, f);
+        if (m) state.ov[m.key] = C.ovFromAf(f, now);
+      }
     });
+    Object.entries(rounds).forEach(([lg, c]) => store.set('afRound:' + lg, c));
   }
   async function afLive(map) {
-    const ids = Object.values(map).map(x => x.afId);
+    const ids = ALL_AF.filter(id => map[id]).map(id => map[id].afId);
     if (!ids.length) return;
+    const now = Date.now();
     const resp = await AF.call(`/fixtures?live=${ids.join('-')}&timezone=${encodeURIComponent(C.TZ)}`);
-    state.af.lastLive = Date.now();
-    const byLeague = {};
-    Object.entries(map).forEach(([id, x]) => { byLeague[x.afId] = id; });
+    state.af.lastLive = now; store.set('afLastLive', now);
     const liveIds = new Set(resp.map(f => f.fixture.id));
-    const stale = new Set();
-    Object.values(byLeague).forEach(id => {
+
+    // Spiele, die vorher live waren und jetzt fehlen, sind wohl beendet → Endstand einmal nachladen
+    const gone = new Set();
+    Object.values(state.ov).forEach(o => { if (o && C.AF_LIVE.has(o.s) && !liveIds.has(o.id)) gone.add(o.id); });
+    AF_ONLY.forEach(id => {
       const c = store.get('afRound:' + id, null);
-      if (!c) return;
-      const fx = new Map((c.fixtures || []).map(f => [f.fixture.id, f]));
-      fx.forEach(f => { if (C.AF_LIVE.has(f.fixture.status.short) && !liveIds.has(f.fixture.id)) stale.add(id); });
-      resp.filter(f => byLeague[f.league.id] === id).forEach(f => fx.set(f.fixture.id, f));
-      c.fixtures = [...fx.values()];
-      c.liveAt = Date.now();
-      store.set('afRound:' + id, c);
+      (c && c.fixtures || []).forEach(f => { if (C.AF_LIVE.has(f.fixture.status.short) && !liveIds.has(f.fixture.id)) gone.add(f.fixture.id); });
     });
-    // Spiele, die aus der Live-Liste verschwunden sind, sind wohl beendet → Spieltag einmal neu laden
-    for (const id of stale) {
-      const c = store.get('afRound:' + id, null);
-      if (c && (!c.refetchAt || Date.now() - c.refetchAt > 8 * 60e3)) {
-        c.stale = true; c.refetchAt = Date.now(); store.set('afRound:' + id, c);
-        await afLoadLeague(id, map[id], true).catch(e => { state.errors[id] = e.message; });
-      }
+    applyFixtures(resp, map, now);
+    if (gone.size) {
+      const fin = await AF.call(`/fixtures?ids=${[...gone].slice(0, 20).join('-')}&timezone=${encodeURIComponent(C.TZ)}`).catch(() => []);
+      fin.forEach(f => {
+        Object.keys(state.ov).forEach(k => { if (state.ov[k].id === f.fixture.id) state.ov[k] = C.ovFromAf(f, now); });
+      });
+      applyFixtures(fin.filter(f => AF_ONLY.some(id => map[id] && map[id].afId === f.league.id)), map, now);
     }
+    saveOv();
   }
-  async function afCycle() {
-    if (!state.af.key) { ['rlw', 'rlsw', 'rlby'].forEach(id => { state.errors[id] = 'nokey'; }); return; }
+  async function afCycle(manual) {
+    state.af.liveErr = null;
+    if (!state.af.key) { AF_ONLY.forEach(id => { state.errors[id] = 'nokey'; }); return; }
     AF.tidy();
-    try {
-      const map = await afDiscover(false);
-      for (const id of ['rlw', 'rlsw', 'rlby']) {
-        if (!map[id]) { state.errors[id] = 'Liga bei API-Football nicht gefunden'; continue; }
-        try {
-          await afLoadLeague(id, map[id], false);
-          await afLoadTable(id, map[id]).catch(() => {});
-          delete state.errors[id];
-        } catch (e) { state.errors[id] = e.code === 'plan' ? 'plan' : e.message; }
-      }
-      if (afNeedsLive(Date.now()) && Date.now() - state.af.lastLive > 170e3) await afLive(map);
-    } catch (e) {
-      ['rlw', 'rlsw', 'rlby'].forEach(id => { state.errors[id] = e.code === 'plan' ? 'plan' : e.message; });
+    let map;
+    try { map = await afDiscover(false); }
+    catch (e) {
+      const code = e.code === 'plan' ? 'plan' : e.message;
+      AF_ONLY.forEach(id => { state.errors[id] = code; });
+      state.af.liveErr = e.code === 'plan' ? 'plan' : e.message;
+      return;
+    }
+    for (const id of AF_ONLY) {
+      if (!map[id]) { state.errors[id] = 'Liga bei API-Football nicht gefunden'; continue; }
+      try {
+        await afLoadLeague(id, map[id]);
+        await afLoadTable(id, map[id]).catch(() => {});
+        delete state.errors[id];
+      } catch (e) { state.errors[id] = e.code === 'plan' ? 'plan' : e.message; }
+    }
+    const wait = manual ? AF_LIVE_MANUAL : AF_LIVE_EVERY;
+    if (needsLive(Date.now()) && Date.now() - state.af.lastLive >= wait) {
+      try { await afLive(map); }
+      catch (e) { state.af.liveErr = e.code === 'plan' ? 'plan' : e.message; }
     }
     afIngestAll();
   }
@@ -945,14 +1084,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     const out = { at: Date.now(), ok: false, msg: '' };
     try {
       const map = await afDiscover(true);
-      const found = ['rlw', 'rlsw', 'rlby'].filter(id => map[id]);
-      if (!found.length) throw new Error('Die drei Regionalligen wurden nicht gefunden.');
-      const first = map[found[0]];
-      await AF.call(`/standings?league=${first.afId}&season=${first.season}`);
+      const found = ALL_AF.filter(id => map[id]);
+      if (!found.length) throw new Error('Die deutschen Ligen wurden bei API-Football nicht gefunden.');
+      const probe = map.rlw || map[found[0]];
+      await AF.call(`/standings?league=${probe.afId}&season=${probe.season}`);
       out.ok = true;
-      out.msg = `Verbunden. ${found.length} von 3 Ligen gefunden, Saison ${first.season}/${String(first.season + 1).slice(2)} ist in deinem Tarif enthalten.`;
+      out.msg = `Verbunden. ${found.length} von 8 Ligen gefunden, die Saison ${probe.season}/${String(probe.season + 1).slice(2)} ist in deinem Tarif enthalten. Live-Stände kommen jetzt von API-Football.`;
     } catch (e) {
-      if (e.code === 'plan') out.msg = 'Der Key funktioniert, aber die aktuelle Saison ist im Gratis-Tarif nicht enthalten. Die drei Ligen bleiben deshalb leer.';
+      if (e.code === 'plan') out.msg = 'Der Key funktioniert, aber die aktuelle Saison ist im Gratis-Tarif nicht enthalten. Live-Stände kommen deshalb nur von OpenLigaDB und können hängen.';
       else if (e.code === 'key') out.msg = 'Der Key wurde nicht akzeptiert. Bitte aus dem API-Football-Dashboard neu kopieren.';
       else out.msg = e.message;
     }
@@ -961,22 +1100,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
   }
 
   /* ---------- Aktualisierung ---------- */
-  async function refresh() {
+  async function refresh(manual) {
     if (DEMO || state.loading) return;
     state.loading = true; setSpin(true);
-    const jobs = C.LEAGUES.filter(l => l.src === 'oldb').map(async lg => {
+    await Promise.allSettled(C.LEAGUES.filter(l => l.src === 'oldb').map(async lg => {
       try { await loadOldb(lg); delete state.errors[lg.id]; }
       catch (e) { state.errors[lg.id] = e.message; }
       loadOldbTable(lg).catch(() => {});
-    });
-    jobs.push(afCycle());
-    await Promise.allSettled(jobs);
+    }));
+    await afCycle(manual).catch(() => {});
     state.lastUpdate = Date.now(); store.set('lastUpdate', state.lastUpdate);
     state.loading = false; setSpin(false);
     render();
   }
   function anyLive(now) {
-    for (const m of state.matches.values()) { const s = C.derive(m, now).state; if (s === 'live' || s === 'ht') return true; }
+    for (const m of state.matches.values()) { const s = C.derive(withOv(m), now).state; if (s === 'live' || s === 'ht') return true; }
     return false;
   }
   function soonKickoff(now) {
@@ -988,7 +1126,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     if (DEMO || document.hidden) return;
     const now = Date.now();
     const every = anyLive(now) || soonKickoff(now) ? 60e3 : 5 * 60e3;
-    if (!state.lastUpdate || now - state.lastUpdate >= every) refresh();
+    if (!state.lastUpdate || now - state.lastUpdate >= every) refresh(false);
   }
 
   /* ---------- Darstellung ---------- */
@@ -996,11 +1134,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
   const ICON_STAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2l2.6 5.6 6.1.7-4.5 4.2 1.2 6-5.4-3-5.4 3 1.2-6-4.5-4.2 6.1-.7z"/></svg>';
 
   function pill(s, m) {
+    const q = s.stale ? '?' : '';
     if (s.state === 'live') {
-      const txt = s.label || `${s.approx ? '~' : ''}${s.min}${s.plus ? '+' : ''}′`;
-      return `<span class="pill p-live"><i class="dot"></i>${esc(txt)}</span>`;
+      const txt = s.label || `${s.approx && !s.stale ? '~' : ''}${s.min}${s.plus ? '+' : ''}′${q}`;
+      return `<span class="pill p-live${s.stale ? ' stale' : ''}"><i class="dot"></i>${esc(txt)}</span>`;
     }
-    if (s.state === 'ht') return `<span class="pill p-ht">${esc(s.label || 'HZ')}</span>`;
+    if (s.state === 'ht') return `<span class="pill p-ht${s.stale ? ' stale' : ''}">${esc(s.label || 'HZ')}${q}</span>`;
     if (s.state === 'pre') {
       const today = C.berlinDate(Date.now()) === C.berlinDate(m.kickoff);
       return `<span class="pill p-pre">${today ? '' : `<small>${esc(C.berlinWd(m.kickoff))}</small>`}${esc(C.berlinTime(m.kickoff))}${s.late ? '?' : ''}</span>`;
@@ -1008,19 +1147,24 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     if (s.state === 'off') return `<span class="pill p-off">${esc(s.label)}</span>`;
     return `<span class="pill p-ft">${esc(s.label || 'Ende')}</span>`;
   }
+  function staleText(s) {
+    if (s.stale === 'none') return 'Noch keine Live-Daten';
+    if (s.stale === 'lag') return `Stand von ${C.berlinTime(s.staleSince)} · Quelle hängt`;
+    return '';
+  }
   function row(x) {
     const { m, s } = x;
     const lg = C.LEAGUE_BY_ID[m.league];
-    const started = s.state !== 'pre' && s.state !== 'off';
-    const sc = started && m.score ? m.score : null;
+    const sc = s.score;
     const lead = sc ? Math.sign(sc[0] - sc[1]) : 0;
     const fav = C.isFav(m, state.favs);
     const meta = [`<span class="lg">${esc(lg.tag)}</span>`];
-    if (m.ht && (s.state === 'live' || s.state === 'ft' || s.state === 'end')) meta.push(`<span>HZ ${m.ht[0]}:${m.ht[1]}</span>`);
-    const lastG = m.goals && m.goals.length ? m.goals[m.goals.length - 1] : null;
+    if (s.stale) meta.push(`<span class="warn">${esc(staleText(s))}</span>`);
+    if (s.ht && (s.state === 'live' || s.state === 'ft' || s.state === 'end') && (s.via === 'af' || m.maxGoalMin > 0 || s.state === 'ft')) meta.push(`<span>HZ ${s.ht[0]}:${s.ht[1]}</span>`);
+    const lastG = s.via === 'oldb' && m.goals && m.goals.length ? m.goals[m.goals.length - 1] : null;
     if (lastG && s.state === 'live' && lastG.min) meta.push(`<span>Tor ${lastG.min}′${lastG.name ? ' ' + esc(lastG.name.split(/[ ,]+/).pop()) : ''}</span>`);
     if (s.state !== 'pre' && C.berlinDate(m.kickoff) !== C.berlinDate(Date.now())) meta.push(`<span>${esc(C.berlinDay(m.kickoff))}</span>`);
-    return `<article class="m s-${s.state}${fav ? ' is-fav' : ''}" data-key="${esc(m.key)}" tabindex="0" aria-label="${esc(m.home.name)} gegen ${esc(m.away.name)}">
+    return `<article class="m s-${s.state}${fav ? ' is-fav' : ''}${s.stale ? ' is-stale' : ''}" data-key="${esc(m.key)}" tabindex="0" aria-label="${esc(m.home.name)} gegen ${esc(m.away.name)}">
       <div class="st">${pill(s, m)}</div>
       <div class="tm">
         <div class="ln${lead > 0 ? ' win' : ''}"><span class="nm">${esc(m.home.name)}</span><span class="sc">${sc ? sc[0] : ''}</span></div>
@@ -1030,17 +1174,35 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       <button class="tipbtn" type="button" data-tip="${esc(m.key)}" aria-label="Prognose für ${esc(m.home.name)} gegen ${esc(m.away.name)}">${ICON_TIP}</button>
     </article>`;
   }
-  function section(id, title, items, note) {
+  function section(id, title, items) {
     if (!items.length) return '';
     return `<section class="grp g-${id}" aria-label="${esc(title)}">
-      <h2><span>${esc(title)}</span><b>${items.length}</b>${note ? `<em>${esc(note)}</em>` : ''}</h2>
+      <h2><span>${esc(title)}</span><b>${items.length}</b></h2>
       ${items.map(row).join('')}
     </section>`;
+  }
+  function topNotice(items) {
+    if (DEMO) return '';
+    const stale = items.filter(x => x.s.stale).length;
+    if (!stale) return '';
+    const st = state.af.status;
+    let why, action = '';
+    if (!state.af.key) {
+      why = 'Ohne API-Football-Key kommen die Live-Stände nur von OpenLigaDB. Dort tragen Freiwillige die Tore von Hand nach, das hängt oft.';
+      action = '<button type="button" class="link" data-open="settings">Key eintragen</button>';
+    } else if (state.af.liveErr === 'plan' || (st && !st.ok && /Tarif/.test(st.msg))) {
+      why = 'Dein API-Football-Tarif enthält die aktuelle Saison nicht. Die Stände kommen deshalb nur von OpenLigaDB und hängen teilweise.';
+    } else if (state.af.liveErr) {
+      why = 'Live-Abruf bei API-Football fehlgeschlagen: ' + state.af.liveErr;
+    } else {
+      why = 'Für diese Spiele kam seit einer Weile kein neuer Stand. Die Werte können veraltet sein.';
+    }
+    return `<div class="note warnbox"><b>${stale} ${stale === 1 ? 'Spiel mit' : 'Spiele mit'} möglicherweise veraltetem Stand</b><span>${esc(why)}</span>${action}</div>`;
   }
   function notices(filter) {
     const out = [];
     const show = id => filter === 'all' || filter === id;
-    const afErr = ['rlw', 'rlsw', 'rlby'].filter(id => show(id) && state.errors[id]);
+    const afErr = AF_ONLY.filter(id => show(id) && state.errors[id]);
     if (afErr.length) {
       const names = afErr.map(id => C.LEAGUE_BY_ID[id].name.replace('Regionalliga ', '')).join(', ');
       const e = state.errors[afErr[0]];
@@ -1055,7 +1217,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
   }
   function render() {
     const now = Date.now();
-    const items = [...state.matches.values()].map(m => ({ m, s: C.derive(m, now) }));
+    const items = [...state.matches.values()].map(m => ({ m: withOv(m), s: C.derive(m, now) }));
     const g = C.group(items, now, state.favs, state.filter);
 
     const cnt = { live: 0, ht: 0, soon: 0 };
@@ -1073,6 +1235,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     document.querySelectorAll('#filters [data-f]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.f === state.filter)));
 
     const html = [
+      topNotice(items),
       section('fav', 'Deine Vereine', g.fav),
       section('live', 'Läuft gerade', g.live),
       section('ht', 'Halbzeit', g.ht),
@@ -1083,6 +1246,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     ].join('');
     const empty = !g.fav.length && !g.live.length && !g.ht.length && !g.soon.length && !g.done.length && !g.rest.length;
     $('#list').innerHTML = html + (empty ? `<div class="empty"><b>${state.filter === 'live' ? 'Gerade läuft kein Spiel' : state.filter === 'ht' ? 'Gerade ist nirgends Halbzeit' : state.loading || !state.lastUpdate ? 'Spiele werden geladen …' : 'Keine Spiele gefunden'}</b><span>${state.filter === 'live' || state.filter === 'ht' ? 'Die Liste füllt sich von selbst, sobald angepfiffen wird.' : ''}</span></div>` : '');
+
+    const src = $('#srcLine');
+    if (src) {
+      src.textContent = DEMO ? '' : state.af.key
+        ? `API-Football heute: ${AF.used()} von ${AF_LIMIT} Abrufen${state.af.lastLive ? ', letzter Live-Abruf ' + C.berlinTime(state.af.lastLive) : ''}.`
+        : 'Live-Stände nur von OpenLigaDB (ohne API-Football-Key).';
+    }
 
     if (state.openKey && !$('#sheet').hidden) fillSheet(state.openKey, true);
   }
@@ -1098,7 +1268,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       lines.push(`Tabelle: ${m.home.name} ${t(p.H)}; ${m.away.name} ${t(p.A)}.`);
       lines.push(`Mein Statistikmodell: Heimsieg ${p.pct[0]} %, Remis ${p.pct[1]} %, Auswärtssieg ${p.pct[2]} %, Tipp ${p.tip.h}:${p.tip.a}.`);
     }
-    if ((s.state === 'live' || s.state === 'ht') && m.score) lines.push(`Aktuell läuft das Spiel: ${m.score[0]}:${m.score[1]}, ${s.state === 'ht' ? 'Halbzeit' : 'etwa ' + s.min + '. Minute'}.`);
+    if ((s.state === 'live' || s.state === 'ht') && s.score && !s.stale) lines.push(`Das Spiel läuft gerade: ${s.score[0]}:${s.score[1]}, ${s.state === 'ht' ? 'Halbzeit' : 'etwa ' + s.min + '. Minute'}.`);
+    if (s.state === 'live' || s.state === 'ht') lines.push('Bitte prüfe auch den aktuellen Live-Stand.');
     lines.push(`Bitte recherchiere aktuelle Form, Ausfälle und direkte Duelle und gib mir die Tendenz mit Wahrscheinlichkeiten und einen konkreten Ergebnistipp. Punkte im Tippspiel: ${state.scoring.exact} für das exakte Ergebnis, ${state.scoring.diff} für die Tordifferenz, ${state.scoring.tend} für die Tendenz. Kurz und knapp.`);
     return lines.join('\n');
   }
@@ -1111,11 +1282,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
   function fillSheet(key, keepScroll) {
     const m = state.matches.get(key);
     if (!m) { closeSheet(); return; }
+    withOv(m);
     const s = C.derive(m, Date.now());
     const lg = C.LEAGUE_BY_ID[m.league];
-    const p = C.predict(m, state.tables[m.league], state.scoring, s);
-    const started = s.state !== 'pre' && s.state !== 'off';
-    const scoreTxt = started && m.score ? `${m.score[0]}:${m.score[1]}` : '–:–';
+    const p = C.predict(m, state.tables[m.league], state.scoring, s.stale ? { state: 'pre' } : s);
+    const scoreTxt = s.score ? `${s.score[0]}:${s.score[1]}` : '–:–';
     const hs = m.home.short || m.home.name, as = m.away.short || m.away.name;
 
     let body = `<header class="sh-head">
@@ -1125,21 +1296,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
           <span class="sh-score">${esc(scoreTxt)}<span>${pill(s, m)}</span></span>
           <span class="sh-team r">${esc(m.away.name)}</span>
         </div>
+        ${s.stale ? `<p class="warn center">${esc(staleText(s))}. Der echte Stand kann abweichen.</p>` : ''}
+        ${s.via === 'af' && !s.stale ? '<p class="fine center">Live-Stand von API-Football</p>' : ''}
       </header>`;
 
-    if (m.goals && m.goals.length) {
+    if (s.via === 'oldb' && m.goals && m.goals.length) {
       body += `<ol class="goals">${m.goals.map(g => `<li class="t${g.team}"><b>${g.h}:${g.a}</b><span>${g.min ? g.min + '′' : ''}</span><span>${esc(g.name)}${g.pen ? ' (Elfm.)' : ''}${g.og ? ' (Eigentor)' : ''}</span></li>`).join('')}</ol>`;
     }
 
     if (!p.ok) {
-      body += `<div class="pred"><h3 id="sheetTitle">Modell-Tipp</h3><p class="muted">${esc(p.reason)}${m.league.startsWith('rl') && ['rlw', 'rlsw', 'rlby'].includes(m.league) && !state.af.key ? ' Ohne API-Football-Key gibt es hier keine Tabelle.' : ''}</p></div>`;
+      body += `<div class="pred"><h3 id="sheetTitle">Modell-Tipp</h3><p class="muted">${esc(p.reason)}${AF_ONLY.includes(m.league) && !state.af.key ? ' Ohne API-Football-Key gibt es hier keine Tabelle.' : ''}</p></div>`;
     } else {
-      const ex = p.tip.e;
       body += `<div class="pred">
         <h3 id="sheetTitle">Modell-Tipp</h3>
         <div class="tipbox">
           <div class="tipnum">${p.tip.h}:${p.tip.a}</div>
-          <div class="tiptxt"><b>Bester Tipp fürs Tippspiel</b><span>bringt im Schnitt ${num(ex, 2)} Punkte (${state.scoring.exact}/${state.scoring.diff}/${state.scoring.tend})</span></div>
+          <div class="tiptxt"><b>Bester Tipp fürs Tippspiel</b><span>bringt im Schnitt ${num(p.tip.e, 2)} Punkte (${state.scoring.exact}/${state.scoring.diff}/${state.scoring.tend})</span></div>
         </div>
         ${bar(p.pct, [hs, 'Remis', as])}
         <dl class="facts">
@@ -1207,7 +1379,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     const st = state.af.status;
     $('#afState').textContent = DEMO ? 'In der Vorschau ist der Abruf abgeschaltet.' : st ? st.msg : state.af.key ? 'Noch nicht geprüft.' : 'Noch kein Key eingetragen.';
     $('#afState').className = 'fine ' + (st && st.ok ? 'ok' : st ? 'bad' : '');
-    $('#afUsed').textContent = `Heute ${AF.used()} von ${AF_LIMIT} Abrufen verbraucht. Die App hört bei ${AF_STOP} auf.`;
+    $('#afUsed').textContent = `Heute ${AF.used()} von ${AF_LIMIT} Abrufen verbraucht. Die App hört bei ${AF_STOP} auf und fragt Live-Stände höchstens alle 2,5 Minuten ab, solange sie geöffnet ist.`;
     $('#favList').innerHTML = state.favs.length
       ? state.favs.map(f => `<button type="button" class="chip on" data-unfav="${esc(f)}">${ICON_STAR}<span>${esc(f)}</span><i aria-hidden="true">×</i></button>`).join('')
       : '<span class="muted">Keine Favoriten. Tippe im Prognose-Blatt auf den Stern eines Vereins.</span>';
@@ -1239,7 +1411,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     $('#list').addEventListener('keydown', e => {
       if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('m')) { e.preventDefault(); openSheet(e.target.dataset.key); }
     });
-    $('#refreshBtn').addEventListener('click', () => { if (DEMO) { render(); return; } state.lastUpdate = 0; refresh(); });
+    $('#refreshBtn').addEventListener('click', () => { if (DEMO) { render(); return; } refresh(true); });
     $('#settingsBtn').addEventListener('click', openSettings);
 
     $('#sheet').addEventListener('click', e => {
@@ -1263,13 +1435,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       if (DEMO) return;
       const key = $('#afKey').value.trim();
       state.af.key = key; store.set('afKey', key);
-      state.af.leagues = null; store.del('afLeagues');
-      ['rlw', 'rlsw', 'rlby'].forEach(id => { store.del('afRound:' + id); store.del('tbl:' + id); });
+      state.af.leagues = null; store.del('afLeagues2'); store.del('afLeagues');
+      AF_ONLY.forEach(id => { store.del('afRound:' + id); store.del('tbl:' + id); });
       if (!key) { state.af.status = null; store.del('afStatus'); fillSettings(); render(); return; }
       $('#afState').textContent = 'Prüfe Key …'; $('#afState').className = 'fine';
       await afCheck();
       fillSettings();
-      state.lastUpdate = 0; refresh();
+      state.af.lastLive = 0;
+      refresh(true);
     });
     ['scExact', 'scDiff', 'scTend'].forEach(id => $('#' + id).addEventListener('change', () => {
       const v = x => Math.max(0, Math.min(20, parseInt($('#' + x).value, 10) || 0));
@@ -1289,9 +1462,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       state.installEvt = null; fillSettings();
     });
     $('#resetBtn').addEventListener('click', () => {
-      store.keys().filter(k => /^(m:|tbl:|afRound:|afLeagues|lastUpdate)/.test(k)).forEach(k => store.del(k));
-      state.matches.clear(); state.tables = {}; state.af.leagues = null; state.lastUpdate = 0;
-      closeSettings(); render(); refresh();
+      store.keys().filter(k => /^(m:|tbl:|afRound:|afLeagues|lastUpdate|ov$)/.test(k)).forEach(k => store.del(k));
+      state.matches.clear(); state.tables = {}; state.af.leagues = null; state.ov = {}; state.lastUpdate = 0;
+      closeSettings(); render(); refresh(true);
     });
     document.addEventListener('keydown', e => {
       if (e.key !== 'Escape') return;
@@ -1308,17 +1481,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       const d = window.__LG_DEMO_DATA__(Date.now());
       d.matches.forEach(m => state.matches.set(m.key, m));
       Object.entries(d.tables).forEach(([id, rows]) => setTable(id, rows));
-      ['rlw', 'rlsw', 'rlby'].forEach(id => { state.errors[id] = 'nokey'; });
+      AF_ONLY.forEach(id => { state.errors[id] = 'nokey'; });
       $('#demoBanner').hidden = false;
       render();
       setInterval(render, 30e3);
       return;
     }
+    store.del('afLeagues');
     loadCachedTables();
     loadCachedMatches();
-    if (!state.af.key) ['rlw', 'rlsw', 'rlby'].forEach(id => { state.errors[id] = 'nokey'; });
+    if (!state.af.key) AF_ONLY.forEach(id => { state.errors[id] = 'nokey'; });
     render();
-    refresh();
+    refresh(false);
     setInterval(tick, 15e3);
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
