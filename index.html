@@ -194,6 +194,20 @@ svg { display: block; }
 .foot { max-width: 760px; margin: 18px auto 0; padding-left: var(--gl); padding-right: var(--gr); padding-block: 8px 28px; font-size: 13px; color: var(--muted); }
 .foot p { margin: 0 0 4px; }
 
+.tvchip {
+  display: inline-flex; align-items: center; gap: 0; height: 24px; padding: 0 8px 0 6px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--fg);
+  font: 600 13px/1 var(--f-num); letter-spacing: .02em; max-width: 100%; overflow: hidden;
+}
+.tvchip svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; margin-right: 5px; flex: none; }
+.tvchip span { white-space: nowrap; }
+.tvchip span + span::before { content: "·"; margin: 0 4px; color: var(--muted); }
+.tvchip i, .badge { font-style: normal; }
+.tvchip .fr i {
+  font: 700 9px/1 var(--f-num); letter-spacing: .06em; text-transform: uppercase; vertical-align: 1px;
+  margin-left: 3px; padding: 2px 3px; border-radius: 3px; background: var(--lila); color: var(--lila-ink);
+}
+
 /* ---------- Blätter (Prognose, Einstellungen) ---------- */
 .sheet-wrap { position: fixed; inset: 0; z-index: 20; }
 .scrim { position: absolute; inset: 0; background: #0D0A11A6; }
@@ -249,6 +263,25 @@ svg { display: block; }
 .facts small { color: var(--muted); }
 .livebox { margin-top: 18px; padding: 14px; border-radius: 12px; background: var(--gelb-wash); }
 .livebox .bar { margin-top: 4px; }
+.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; margin-top: 16px; border-radius: 12px; background: var(--surface-2); }
+.tabs button {
+  height: 38px; border: 0; border-radius: 9px; background: transparent; color: var(--muted);
+  display: flex; align-items: center; justify-content: center; gap: 6px; font-weight: 600;
+}
+.tabs button[aria-selected="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px #0000001f; }
+.tabs svg { width: 16px; height: 16px; }
+.tabs [data-mode="tip"] svg { fill: currentColor; }
+.tabs [data-mode="tv"] svg { fill: none; stroke: currentColor; stroke-width: 2; }
+.tvlist { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 8px; }
+.tvlist li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; }
+.tvname { display: grid; gap: 2px; min-width: 0; }
+.tvname b { font-size: 17px; }
+.tvname span { font-size: 13px; color: var(--muted); }
+.badge { flex: none; font: 700 12px/1 var(--f-num); letter-spacing: .06em; text-transform: uppercase; padding: 5px 8px; border-radius: 6px; }
+.badge.pay { background: var(--surface-2); color: var(--fg); }
+.badge.free { background: var(--gelb); color: var(--gelb-ink); }
+.tvhl { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--lila-wash); color: var(--lila-text); font-weight: 500; font-size: 14px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); }
 .fine { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
 .fine.ok { color: var(--ok); }
@@ -810,12 +843,75 @@ const LGCore = (() => {
     return out;
   }
 
+  /* ---------- TV-Übertragung (Rechteverteilung 2026/27) ---------- */
+  const CH = {
+    sky:     { name: 'Sky', short: 'Sky', sub: 'auch per WOW-Stream', free: false },
+    dazn:    { name: 'DAZN', short: 'DAZN', sub: 'Streaming', free: false },
+    magenta: { name: 'MagentaSport', short: 'Magenta', sub: 'MagentaTV', free: false },
+    rtl:     { name: 'RTL oder Nitro', short: 'RTL/Nitro', sub: 'auch per RTL+', free: true },
+    sat1:    { name: 'Sat.1', short: 'Sat.1', sub: 'auch per Joyn', free: true },
+    leagues: { name: 'LEAGUES', short: 'LEAGUES', sub: 'Stream, alle Spiele', free: false },
+  };
+  // Sat.1 zeigt das Freitagsspiel vor und nach der Winterpause (laut Rechteplan)
+  const SAT1_BL1 = new Set(['2026-12-18', '2027-01-08']);
+  const wdNum = ms => ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'].indexOf(berlinWd(ms));
+
+  function tvRule(m) {
+    const wd = wdNum(m.kickoff), hm = berlinTime(m.kickoff), date = berlinDate(m.kickoff);
+    const ch = (k, what) => ({ ...CH[k], what: what || '' });
+    const out = { list: [], notes: [], highlights: '' };
+    switch (m.league) {
+      case 'bl1':
+        if (wd === 0) { out.list.push(ch('dazn')); out.highlights = 'Zusammenfassung im Free-TV: ARD, Sonntag ab 21:15 Uhr'; }
+        else if (wd === 6 && hm === '15:30') { out.list.push(ch('sky', 'Einzelspiel'), ch('dazn', 'Konferenz')); out.highlights = 'Zusammenfassung im Free-TV: Sportschau (ARD) ab 18:30 Uhr'; }
+        else if (wd === 6) { out.list.push(ch('sky')); out.highlights = 'Zusammenfassung im Free-TV: Sportstudio (ZDF) ab 21:45 Uhr'; }
+        else if (wd === 2 || wd === 3) out.list.push(ch('sky', 'Einzelspiel'), ch('dazn', 'Konferenz'));
+        else out.list.push(ch('sky'));
+        if (wd === 5 && SAT1_BL1.has(date)) out.list.push(ch('sat1'));
+        break;
+      case 'bl2':
+        out.list.push(ch('sky', 'Einzelspiel und Konferenz'));
+        if (wd === 6 && hm === '20:30') out.list.push(ch('rtl'));
+        break;
+      case 'bl3':
+        out.list.push(ch('magenta'));
+        out.notes.push('Die ARD-Dritten (z. B. NDR, WDR, BR, SWR, MDR) zeigen rund zwei Spiele pro Wochenende frei. Für dieses Spiel ist keine Free-TV-Übertragung bekannt.');
+        break;
+      case 'rln':
+        out.list.push(ch('leagues'));
+        break;
+      default:
+        out.notes.push('Für diese Regionalliga ist kein fester TV-Partner hinterlegt. Einzelne Spiele laufen gelegentlich im Free-TV der Dritten Programme oder als Vereins-Stream.');
+    }
+    return out;
+  }
+  // Wochenliste (tv.json) mit konkreten Free-TV-Spielen hat Vorrang vor der Regel
+  function tvFor(m, weekly) {
+    const out = tvRule(m);
+    out.source = 'rule';
+    const date = berlinDate(m.kickoff);
+    const g = (weekly && weekly.games || []).find(x => x.date === date && (!x.league || x.league === m.league) &&
+      teamSim(m.home.name, x.home) > 0 && teamSim(m.away.name, x.away) > 0);
+    if (g) {
+      out.source = 'weekly';
+      if (Array.isArray(g.free)) {
+        out.list = out.list.filter(c => !c.free);
+        g.free.forEach(name => out.list.push({ name, short: name, sub: '', free: true, what: '' }));
+        if (m.league === 'bl3') out.notes = g.free.length ? [] : ['Dieses Spiel läuft nicht im Free-TV.'];
+      }
+      if (Array.isArray(g.pay)) g.pay.forEach(name => { if (!out.list.some(c => c.name === name)) out.list.push({ name, short: name, sub: '', free: false, what: '' }); });
+      out.weeklyAt = weekly.updated || '';
+      if (g.note) out.notes.push(g.note);
+    }
+    return out;
+  }
+
   return {
     TZ, LEAGUES, LEAGUE_BY_ID, AF_LIVE, AF_FINAL, AF_OFF,
     norm, clamp, seasonFor, berlinDate, berlinTime, berlinDay, berlinWd,
     parseOldb, parseAf, roundLabel, derive, minuteOf, ovFromAf, matchFixture, berlinLocalToMs, teamSim,
     tableFromOldb, tableFromAf, makeTable, findRow,
-    predict, tipPoints, pct3, isFav, group,
+    predict, tipPoints, pct3, isFav, group, tvFor,
   };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
@@ -856,6 +952,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     loading: false,
     af: { key: store.get('afKey', ''), leagues: store.get('afLeagues2', null), status: store.get('afStatus', null), lastLive: store.get('afLastLive', 0), liveErr: null },
     openKey: null,
+    sheetMode: 'tip',
+    tv: store.get('tv', null),
+    tvAt: 0,
     installEvt: null,
   };
 
@@ -1138,10 +1237,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     return out;
   }
 
+  /* ---------- TV-Wochenliste (tv.json im Repo) ---------- */
+  async function loadTv() {
+    if (Date.now() - state.tvAt < 30 * 60e3) return;
+    state.tvAt = Date.now();
+    try {
+      const r = await fetch('./tv.json?t=' + Math.floor(Date.now() / 60e3), { cache: 'no-store' });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && Array.isArray(j.games)) { state.tv = j; store.set('tv', j); }
+    } catch (e) { /* ohne Liste gelten die Regeln */ }
+  }
+
   /* ---------- Aktualisierung ---------- */
   async function refresh(manual) {
     if (DEMO || state.loading) return;
     state.loading = true; setSpin(true);
+    loadTv();
     await Promise.allSettled(C.LEAGUES.filter(l => l.src === 'oldb').map(async lg => {
       try { await loadOldb(lg); delete state.errors[lg.id]; }
       catch (e) { state.errors[lg.id] = e.message; }
@@ -1172,6 +1284,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
 
   /* ---------- Darstellung ---------- */
   const ICON_TIP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l1.9 5.6 5.6 1.9-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>';
+  const ICON_TV = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>';
   const ICON_STAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2l2.6 5.6 6.1.7-4.5 4.2 1.2 6-5.4-3-5.4 3 1.2-6-4.5-4.2 6.1-.7z"/></svg>';
 
   function pill(s, m) {
@@ -1193,6 +1306,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     if (s.stale === 'lag') return `Stand von ${C.berlinTime(s.staleSince)} · Quelle hängt`;
     return '';
   }
+  function tvChip(m) {
+    const tv = C.tvFor(m, state.tv);
+    const names = [];
+    tv.list.forEach(c => { if (!names.some(n => n.t === c.short)) names.push({ t: c.short || c.name, free: c.free }); });
+    const inner = names.length
+      ? names.map(n => `<span${n.free ? ' class="fr"' : ''}>${esc(n.t)}${n.free ? '<i>frei</i>' : ''}</span>`).join('')
+      : '<span>TV-Info</span>';
+    return `<button type="button" class="tvchip" data-tv="${esc(m.key)}" aria-label="Übertragung: ${esc(names.map(n => n.t + (n.free ? ' frei' : '')).join(', ') || 'Info')}">${ICON_TV}${inner}</button>`;
+  }
   function row(x) {
     const { m, s } = x;
     const lg = C.LEAGUE_BY_ID[m.league];
@@ -1210,7 +1332,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
       <div class="tm">
         <div class="ln${lead > 0 ? ' win' : ''}"><span class="nm">${esc(m.home.name)}</span><span class="sc">${sc ? sc[0] : ''}</span></div>
         <div class="ln${lead < 0 ? ' win' : ''}"><span class="nm">${esc(m.away.name)}</span><span class="sc">${sc ? sc[1] : ''}</span></div>
-        <div class="meta">${meta.join('')}${fav ? `<span class="favmark">${ICON_STAR}</span>` : ''}</div>
+        <div class="meta">${meta.join('')}${tvChip(m)}${fav ? `<span class="favmark">${ICON_STAR}</span>` : ''}</div>
       </div>
       <button class="tipbtn" type="button" data-tip="${esc(m.key)}" aria-label="Prognose für ${esc(m.home.name)} gegen ${esc(m.away.name)}">${ICON_TIP}</button>
     </article>`;
@@ -1332,6 +1454,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     const scoreTxt = s.score ? `${s.score[0]}:${s.score[1]}` : '–:–';
     const hs = m.home.short || m.home.name, as = m.away.short || m.away.name;
 
+    const tv = C.tvFor(m, state.tv);
+    const tabs = `<div class="tabs" role="tablist">
+        <button type="button" role="tab" data-mode="tip" aria-selected="${state.sheetMode === 'tip'}">${ICON_TIP}<span>Prognose</span></button>
+        <button type="button" role="tab" data-mode="tv" aria-selected="${state.sheetMode === 'tv'}">${ICON_TV}<span>Übertragung</span></button>
+      </div>`;
     let body = `<header class="sh-head">
         <p class="eyebrow">${esc(lg.name)} · ${esc(m.matchday)} · ${esc(C.berlinDay(m.kickoff))}, ${esc(C.berlinTime(m.kickoff))}</p>
         <div class="sh-match">
@@ -1341,7 +1468,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
         </div>
         ${s.stale ? `<p class="warn center">${esc(staleText(s))}. Der echte Stand kann abweichen.</p>` : ''}
         ${s.via === 'af' && !s.stale ? '<p class="fine center">Live-Stand von API-Football</p>' : ''}
-      </header>`;
+      </header>${tabs}`;
+
+    if (state.sheetMode === 'tv') {
+      body += `<h3 id="sheetTitle" class="vh">Übertragung</h3>`;
+      body += tv.list.length ? `<ul class="tvlist">${tv.list.map(c => `<li>
+          <div class="tvname"><b>${esc(c.name)}</b>${c.sub || c.what ? `<span>${esc([c.what, c.sub].filter(Boolean).join(' · '))}</span>` : ''}</div>
+          <span class="badge ${c.free ? 'free' : 'pay'}">${c.free ? 'Free-TV' : 'Pay-TV'}</span>
+        </li>`).join('')}</ul>` : '<p class="muted">Für dieses Spiel ist keine Übertragung bekannt.</p>';
+      if (tv.highlights) body += `<p class="tvhl">${esc(tv.highlights)}</p>`;
+      tv.notes.forEach(n => { body += `<p class="fine">${esc(n)}</p>`; });
+      body += `<p class="fine">${tv.source === 'weekly' ? `Aus der Wochenliste${tv.weeklyAt ? ' vom ' + esc(C.berlinDay(Date.parse(tv.weeklyAt))) : ''}, ergänzt um die feste Rechteverteilung 2026/27.` : 'Nach der festen Rechteverteilung 2026/27 (Anstoßzeit und Liga). Kurzfristige Free-TV-Spiele stehen nur in der Wochenliste.'}</p>`;
+      const sb0 = $('#sheetBody');
+      const top0 = sb0.scrollTop;
+      sb0.innerHTML = body;
+      if (keepScroll) sb0.scrollTop = top0;
+      return;
+    }
 
     if (s.via === 'oldb' && m.goals && m.goals.length) {
       body += `<ol class="goals">${m.goals.map(g => `<li class="t${g.team}"><b>${g.h}:${g.a}</b><span>${g.min ? g.min + '′' : ''}</span><span>${esc(g.name)}${g.pen ? ' (Elfm.)' : ''}${g.og ? ' (Eigentor)' : ''}</span></li>`).join('')}</ol>`;
@@ -1391,8 +1534,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     if (keepScroll) sb.scrollTop = top;
     sb.dataset.prompt = prompt;
   }
-  function openSheet(key) {
+  function openSheet(key, mode) {
     state.openKey = key;
+    state.sheetMode = mode || 'tip';
     fillSheet(key);
     $('#sheet').hidden = false;
     document.body.classList.add('locked');
@@ -1448,8 +1592,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
     });
     $('#list').addEventListener('click', e => {
       if (e.target.closest('[data-open="settings"]')) { openSettings(); return; }
+      const tv = e.target.closest('[data-tv]');
+      if (tv) { openSheet(tv.dataset.tv, 'tv'); return; }
       const t = e.target.closest('[data-tip]') || e.target.closest('.m');
-      if (t) openSheet(t.dataset.tip || t.dataset.key);
+      if (t) openSheet(t.dataset.tip || t.dataset.key, 'tip');
     });
     $('#list').addEventListener('keydown', e => {
       if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('m')) { e.preventDefault(); openSheet(e.target.dataset.key); }
@@ -1459,6 +1605,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LGCore;
 
     $('#sheet').addEventListener('click', e => {
       if (e.target.closest('[data-close]')) { closeSheet(); return; }
+      const sw = e.target.closest('[data-mode]');
+      if (sw) { state.sheetMode = sw.dataset.mode; fillSheet(state.openKey); $('#sheetBody').scrollTop = 0; return; }
       if (e.target.closest('#copyPrompt')) { copyText($('#sheetBody').dataset.prompt || '', $('#copyMsg')); return; }
       const f = e.target.closest('[data-fav]');
       if (f) {

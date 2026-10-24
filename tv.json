@@ -1,0 +1,10 @@
+{
+  "updated": "2026-10-24T18:00:00+02:00",
+  "games": [
+    { "date": "2026-10-24", "league": "bl3", "home": "FC Ingolstadt 04", "away": "MSV Duisburg", "free": ["WDR", "BR"] },
+    { "date": "2026-10-24", "league": "bl2", "home": "1. FC Nürnberg", "away": "1. FC Kaiserslautern", "free": ["Nitro"], "note": "Auch im Stream bei RTL+." },
+    { "date": "2026-10-25", "league": "bl3", "home": "TSV Havelse", "away": "1. FC Saarbrücken", "free": [] },
+    { "date": "2026-10-25", "league": "bl3", "home": "Preußen Münster", "away": "Fortuna Köln", "free": [] },
+    { "date": "2026-10-25", "league": "bl3", "home": "SV Waldhof Mannheim", "away": "TSG 1899 Hoffenheim II", "free": [] }
+  ]
+}
