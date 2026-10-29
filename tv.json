@@ -1,10 +1,22 @@
 {
-  "updated": "2026-10-24T18:00:00+02:00",
+  "updated": "2026-10-29T20:15:00+01:00",
   "games": [
     { "date": "2026-10-24", "league": "bl3", "home": "FC Ingolstadt 04", "away": "MSV Duisburg", "free": ["WDR", "BR"] },
     { "date": "2026-10-24", "league": "bl2", "home": "1. FC Nürnberg", "away": "1. FC Kaiserslautern", "free": ["Nitro"], "note": "Auch im Stream bei RTL+." },
     { "date": "2026-10-25", "league": "bl3", "home": "TSV Havelse", "away": "1. FC Saarbrücken", "free": [] },
     { "date": "2026-10-25", "league": "bl3", "home": "Preußen Münster", "away": "Fortuna Köln", "free": [] },
-    { "date": "2026-10-25", "league": "bl3", "home": "SV Waldhof Mannheim", "away": "TSG 1899 Hoffenheim II", "free": [] }
+    { "date": "2026-10-25", "league": "bl3", "home": "SV Waldhof Mannheim", "away": "TSG 1899 Hoffenheim II", "free": [] },
+    { "date": "2026-10-30", "league": "bl3", "home": "Fortuna Düsseldorf", "away": "SV Meppen", "free": [] },
+    { "date": "2026-10-31", "league": "bl3", "home": "TSV Havelse", "away": "FC Ingolstadt 04", "free": [] },
+    { "date": "2026-10-31", "league": "bl3", "home": "SSV Jahn Regensburg", "away": "F.C. Hansa Rostock", "free": ["BR", "NDR"] },
+    { "date": "2026-10-31", "league": "bl3", "home": "SC Verl", "away": "SV Wehen Wiesbaden", "free": [] },
+    { "date": "2026-10-31", "league": "bl3", "home": "MSV Duisburg", "away": "VfB Stuttgart II", "free": [] },
+    { "date": "2026-10-31", "league": "bl3", "home": "TSG 1899 Hoffenheim II", "away": "FC Viktoria Köln", "free": [] },
+    { "date": "2026-10-31", "league": "bl3", "home": "SC Fortuna Köln", "away": "FC Würzburger Kickers", "free": [] },
+    { "date": "2026-10-31", "league": "bl2", "home": "Karlsruher SC", "away": "1. FC Heidenheim 1846", "free": ["Nitro"], "note": "Auch im Stream bei RTL+." },
+    { "date": "2026-10-31", "league": "rlno", "home": "FC Erzgebirge Aue", "away": "FC Carl Zeiss Jena", "free": ["MDR"], "note": "Auch im Stream in der ARD Mediathek und bei Sport im Osten." },
+    { "date": "2026-11-01", "league": "bl3", "home": "1. FC Saarbrücken", "away": "SV Waldhof Mannheim", "free": ["SR", "SWR"], "note": "Auch im Stream bei sportschau.de und in der ARD Mediathek." },
+    { "date": "2026-11-01", "league": "bl3", "home": "SG Sonnenhof Großaspach", "away": "Rot-Weiss Essen", "free": [] },
+    { "date": "2026-11-01", "league": "bl3", "home": "Alemannia Aachen", "away": "SC Preußen Münster", "free": [] }
   ]
 }
